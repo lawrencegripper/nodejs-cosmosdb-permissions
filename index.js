@@ -1,5 +1,6 @@
 var restify = require('restify');
 var documentClient = require("documentdb").DocumentClient;
+var uuid = require('uuid');
 
 //Create CosmosDB client
 let client = new documentClient(process.env.COSMOS_ENDPOINT, { "masterKey": process.env.COSMOS_KEY });
@@ -91,7 +92,7 @@ function checkAndCreateUser(dbLink, userId) {
         handleError(err);
       } else if (results.length === 0) {
 
-        client.createUser(dbLink, {id : userId}, (error, results) => {
+        client.createUser(dbLink, { id: userId }, (error, results) => {
           if (error) {
             reject(error);
           } else {
@@ -148,13 +149,33 @@ server.use(restify.acceptParser(server.acceptable));
 server.use(restify.queryParser());
 server.use(restify.bodyParser());
 
-server.get('/cosmostoken', function (req, res, next) {
+server.get('/cosmos/read', function (req, res, next) {
+  let limitedClient = new documentClient(process.env.COSMOS_ENDPOINT, {
+    'resourceTokens': [
+      req.headers['token']
+    ]
+  })
+
+  limitedClient.readDocument(req.headers['link'], (error, result) => {
+    if (error) {
+      res.code = 500;
+      res.send();
+      return next();
+    }
+    else {
+      res.send(result);
+      return next();
+    }
+  });
+});
+
+server.get('/cosmos/create', function (req, res, next) {
   let document = {
-    'id': req.params['id'],
+    'id': uuid.v4(),
     'content': req.params
   }
 
-  client.createDocument(collectionObj._self, document, (err, created) => {
+  client.createDocument(collectionObj._self, document, (err, createdDoc) => {
     if (err) {
       res.code = 500;
       res.send();
@@ -162,14 +183,43 @@ server.get('/cosmostoken', function (req, res, next) {
     }
     else {
       let permissions = {
+        'id': uuid.v4(),
         'permissionMode': 'read',
-        'resource': created._self
+        'resource': createdDoc._self
       };
 
-      client.createPermission(dbUserObj._self, permissions, (error, resource) => {
+      client.createPermission(dbUserObj._self, permissions, (error, createdPermission) => {
 
-        res.send(document);
-        return next();
+        //Normal path, returning the token and permissions to the user. 
+        // res.send({
+        //   'readToken': resource._token,
+        //   'docLink': resource._self,
+        //   'doc': document
+        // });
+        //return next();
+        
+
+
+        //To Simplify debugging
+
+        let resourceId = createdDoc._rid;
+        let permissionId = createdPermission._self;
+        let limitedClient = new documentClient(process.env.COSMOS_ENDPOINT, {
+          'resourceTokens': {resourceId : createdPermission._token}
+        })
+
+        limitedClient.readDocument(createdDoc._self, (error, result) => {
+          if (error) {
+            res.code = 500;
+            res.send(error);
+            return next();
+          }
+          else {
+            res.send(result);
+            return next();
+          }
+        });
+
       });
     }
   });
