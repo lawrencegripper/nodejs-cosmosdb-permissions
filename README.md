@@ -3,6 +3,8 @@ Quick sample to demonstrate using CosmosDB permissions in nodejs. Creating a doc
 
 # Walthrough
 
+## Step 1
+
 Create a document using the master key and get a read and write token which can be passed to other systems, allowing them to access only this document. 
 
 ```
@@ -27,7 +29,7 @@ Returns...
 }
 ```
 
-#Demonstrate using these tokens to access a document
+## Step 2
 
 Using the token, resourceId and docLink from the above request we can now access the document.
 
