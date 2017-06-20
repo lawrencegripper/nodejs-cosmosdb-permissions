@@ -14,13 +14,13 @@ let databaseUrl = `dbs/${dbname}`;
 let collectionName = 'testcollection';
 let collectionUrl = `${databaseUrl}/${collectionName}`;
 let collectionConfig = {
-  "id": collectionName
+  id: collectionName
 };
-let userIdForInstance = 'bob';
 
 let collectionObj = null;
 let dbObj = null;
-let dbUserObj = null;
+let dbReadonlyUserObj = null;
+let dbReadWriteUserObj = null;
 
 function checkAndCreateDatabase() {
   return new Promise((resolve, reject) => {
@@ -119,17 +119,29 @@ checkAndCreateDatabase()
         //We're all setup so lets start restify
         collectionObj = coll;
 
-        checkAndCreateUser(db._self, userIdForInstance)
+        //Create readonly user
+        checkAndCreateUser(db._self, 'readonlyUser')
           .then((user) => {
 
-            dbUserObj = user;
-            server.listen(8080, function () {
-              console.log('%s listening at %s', server.name, server.url);
-            });
+            dbReadonlyUserObj = user;
+
+            checkAndCreateUser(db._self, 'readWriteUser')
+              .then((user) => {
+
+                dbReadWriteUserObj = user;
+                server.listen(8080, function () {
+                  console.log('%s listening at %s', server.name, server.url);
+                });
+              })
+              .catch((error) => {
+                console.log(`User creation completed with error ${JSON.stringify(error)}`)
+              });
           })
           .catch((error) => {
             console.log(`User creation completed with error ${JSON.stringify(error)}`)
           });
+
+
       })
       .catch((error) => {
         console.log(`Collection completed with error ${JSON.stringify(error)}`)
@@ -150,16 +162,21 @@ server.use(restify.queryParser());
 server.use(restify.bodyParser());
 
 server.get('/cosmos/read', function (req, res, next) {
+  // Takes in headers of 'resourceId', 'doclink' and 'token'
+  // Then creates a limitedClient using the supplied token to read the data
+  // from the document. 
+  // The client cannot access other resources. 
+
+
+  let resourceId = req.headers['resourceid'].toLowerCase();
   let limitedClient = new documentClient(process.env.COSMOS_ENDPOINT, {
-    'resourceTokens': [
-      req.headers['token']
-    ]
+    resourceTokens: { [resourceId]: req.headers['token'] }
   })
 
-  limitedClient.readDocument(req.headers['link'], (error, result) => {
+  limitedClient.readDocument(req.headers['doclink'], (error, result) => {
     if (error) {
       res.code = 500;
-      res.send();
+      res.send(error);
       return next();
     }
     else {
@@ -170,56 +187,60 @@ server.get('/cosmos/read', function (req, res, next) {
 });
 
 server.get('/cosmos/create', function (req, res, next) {
+  // Creates a new document using the master key 
+  // Creates a token so other system can use this to access only this document
+  // Returns the 'readToken', 'readWriteToken', 'resourceId' and 'docLink'
+  // these can be passed to '/cosmos/create' to access the document using the token.  
+
   let document = {
     'id': uuid.v4(),
-    'content': req.params
+    'content': {
+      'some': 'content'
+    }
   }
 
   client.createDocument(collectionObj._self, document, (err, createdDoc) => {
     if (err) {
       res.code = 500;
-      res.send();
+      res.send(error);
       return next();
     }
     else {
-      let permissions = {
-        'id': uuid.v4(),
-        'permissionMode': 'read',
-        'resource': createdDoc._self
+      let readPermissions = {
+        id: uuid.v4(),
+        permissionMode: 'read',
+        resource: createdDoc._self
       };
 
-      client.createPermission(dbUserObj._self, permissions, (error, createdPermission) => {
+      let writePermissions = {
+        id: uuid.v4(),
+        permissionMode: 'all',
+        resource: createdDoc._self
+      };
 
-        //Normal path, returning the token and permissions to the user. 
-        // res.send({
-        //   'readToken': resource._token,
-        //   'docLink': resource._self,
-        //   'doc': document
-        // });
-        //return next();
-        
-
-
-        //To Simplify debugging
-
-        let resourceId = createdDoc._rid;
-        let permissionId = createdPermission._self;
-        let limitedClient = new documentClient(process.env.COSMOS_ENDPOINT, {
-          'resourceTokens': {resourceId : createdPermission._token}
-        })
-
-        limitedClient.readDocument(createdDoc._self, (error, result) => {
+      //Request readonly permissions
+      client.createPermission(dbReadonlyUserObj._self, readPermissions, (error, createdReadonlyPermission) => {
+        if (error) {
+          res.code = 500;
+          res.send(error);
+          return next();
+        }
+        //Request readwrite permissions
+        client.createPermission(dbReadWriteUserObj._self, writePermissions, (error, createdWritePermission) => {
           if (error) {
             res.code = 500;
             res.send(error);
             return next();
           }
-          else {
-            res.send(result);
-            return next();
-          }
+          res.send({
+            readToken: createdReadonlyPermission._token,
+            readWriteToken: createdWritePermission._token,
+            docLink: createdDoc._self,
+            resourceId: createdDoc._rid,
+            documentCreated: document
+          });
+          return next();
         });
-
       });
     }
   });
