@@ -164,21 +164,32 @@ server.get('/cosmos/read', function (req, res, next) {
   // from the document. 
   // The client cannot access other resources. 
 
-
+  let docLink = req.headers['doclink'];
   let resourceId = req.headers['resourceid'].toLowerCase();
   let limitedClient = new documentClient(process.env.COSMOS_ENDPOINT, {
     resourceTokens: { [resourceId]: req.headers['token'] }
   })
 
-  limitedClient.readDocument(req.headers['doclink'], (error, result) => {
+  limitedClient.readDocument(docLink, (error, readDoc) => {
     if (error) {
       res.code = 500;
       res.send(error);
       return next();
     }
     else {
-      res.send(result);
-      return next();
+      var attachments = limitedClient.readAttachments(docLink).toArray((errror, readAttachments) => {
+
+        if (readAttachments && readAttachments.length > 0) {
+          readAttachments.forEach((item) =>{
+            limitedClient.readMedia(item._self).then((media) =>{
+              console.log(media.length);
+            });
+          }); 
+        }
+
+        res.send(readDoc);
+        return next();
+      });
     }
   });
 });
@@ -248,6 +259,35 @@ server.get('/cosmos/create', function (req, res, next) {
     }
   });
 });
+
+server.put('/cosmos/attach/', function (req, res, next) {
+  // Takes in headers of 'resourceId', 'doclink' and 'token'
+  // Then creates a limitedClient using the supplied token to read the data
+  // from the document. 
+  // The client cannot access other resources. 
+  if (!req.isUpload()) {
+    res.send('Endpoint requires a file upload to attach to the document');
+    return next();
+  }
+
+  let resourceId = req.headers['resourceid'].toLowerCase();
+  let limitedClient = new documentClient(process.env.COSMOS_ENDPOINT, {
+    resourceTokens: { [resourceId]: req.headers['token'] }
+  })
+
+  limitedClient.createAttachmentAndUploadMedia(req.headers['doclink'], req.body, (error, result) => {
+    if (error) {
+      res.code = 500;
+      res.send(error);
+      return next();
+    }
+    else {
+      res.send(result);
+      return next();
+    }
+  });
+});
+
 
 //Oustanding Questions:
 // - How does/can tokens be revoked? Was unable to get this to work. Once issues tokens seem to last for the lifetime of the resource. 
