@@ -11,12 +11,8 @@ let dbconfig = {
   "id": dbname
 };
 let databaseUrl = `dbs/${dbname}`;
-let collectionName = 'testcollection';
-let collectionUrl = `${databaseUrl}/${collectionName}`;
-let collectionConfig = {
-  id: collectionName
-};
 
+//Cosmos objects, available once initialized. 
 let collectionObj = null;
 let dbObj = null;
 let dbReadonlyUserObj = null;
@@ -41,8 +37,8 @@ function checkAndCreateDatabase() {
   });
 }
 
-function checkAndCreateCollection(dbLink, collectionConfiguration) {
-  let collectionId = collectionConfig.id;
+function checkAndCreateCollection(collectionName, dbLink) {
+  let collectionId = collectionName;
 
   return new Promise((resolve, reject) => {
     console.log(dbLink)
@@ -63,7 +59,7 @@ function checkAndCreateCollection(dbLink, collectionConfiguration) {
             id: collectionId
           };
 
-          client.createCollection(databaseLink, collectionSpec, function (err, created) {
+          client.createCollection(dbLink, collectionSpec, function (err, created) {
             resolve(created);
           });
 
@@ -110,16 +106,17 @@ function checkAndCreateUser(dbLink, userId) {
   });
 }
 
+//Initialize the server, checking and creating (if needed), our database, collections and users. 
 checkAndCreateDatabase()
   .then((db) => {
     dbObj = db;
     console.log(`Completed DB Create`);
-    checkAndCreateCollection(db._self, collectionConfig)
+    checkAndCreateCollection('testCollection2', db._self)
       .then((coll) => {
         //We're all setup so lets start restify
         collectionObj = coll;
 
-        //Create readonly user
+        //Create readonly users
         checkAndCreateUser(db._self, 'readonlyUser')
           .then((user) => {
 
@@ -233,8 +230,14 @@ server.get('/cosmos/create', function (req, res, next) {
             return next();
           }
           res.send({
-            readToken: createdReadonlyPermission._token,
-            readWriteToken: createdWritePermission._token,
+            readToken: {
+              id: createdReadonlyPermission._self,
+              token: createdReadonlyPermission._token
+            },
+            readWriteToken: {
+              id: createdWritePermission._self,
+              token: createdWritePermission._token
+            },
             docLink: createdDoc._self,
             resourceId: createdDoc._rid,
             documentCreated: document
@@ -245,4 +248,10 @@ server.get('/cosmos/create', function (req, res, next) {
     }
   });
 });
+
+//Oustanding Questions:
+// - How does/can tokens be revoked? Was unable to get this to work. Once issues tokens seem to last for the lifetime of the resource. 
+// - Get a better handle on the User -> Permission relationship. Could other services be
+//    granted permisions to a user object and retreive all the tokens from that object,
+//    then create a user per service, would this work well?
 
