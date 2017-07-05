@@ -1,6 +1,7 @@
 var restify = require('restify');
 var documentClient = require("documentdb").DocumentClient;
 var uuid = require('uuid');
+var utils = require('./utils.js');
 
 //Create CosmosDB client
 let client = new documentClient(process.env.COSMOS_ENDPOINT, { "masterKey": process.env.COSMOS_KEY });
@@ -18,111 +19,23 @@ let dbObj = null;
 let dbReadonlyUserObj = null;
 let dbReadWriteUserObj = null;
 
-function checkAndCreateDatabase() {
-  return new Promise((resolve, reject) => {
-    client.readDatabase(databaseUrl, (err, result) => {
-      if (err) {
-        if (err.code == '404') {
-          client.createDatabase(dbconfig, (err, created) => {
-            if (err) reject(err)
-            else resolve(created);
-          });
-        } else {
-          reject(err);
-        }
-      } else {
-        resolve(result);
-      }
-    });
-  });
-}
-
-function checkAndCreateCollection(collectionName, dbLink) {
-  let collectionId = collectionName;
-
-  return new Promise((resolve, reject) => {
-    console.log(dbLink)
-    var querySpec = {
-      query: 'SELECT * FROM root r WHERE r.id=@id',
-      parameters: [{
-        name: '@id',
-        value: collectionId
-      }]
-    };
-    client.queryCollections(dbLink, querySpec).toArray(function (err, results) {
-      if (err) {
-        callback(err);
-
-      } else {
-        if (results.length === 0) {
-          var collectionSpec = {
-            id: collectionId
-          };
-
-          client.createCollection(dbLink, collectionSpec, function (err, created) {
-            resolve(created);
-          });
-
-        } else {
-          resolve(results[0]);
-        }
-      }
-    });
-  });
-}
-
-function checkAndCreateUser(dbLink, userId) {
-  return new Promise((resolve, reject) => {
-    var querySpec = {
-      query: 'SELECT * FROM root r WHERE r.id=@id',
-      parameters: [
-        {
-          name: '@id',
-          value: userId
-        }
-      ]
-    };
-
-    client.queryUsers(dbLink, querySpec).toArray(function (err, results) {
-      if (err) {
-        handleError(err);
-      } else if (results.length === 0) {
-
-        client.createUser(dbLink, { id: userId }, (error, results) => {
-          if (error) {
-            reject(error);
-          } else {
-            resolve(results);
-          }
-        });
-
-        //collection found, return it
-      } else {
-        resolve(results[0]);
-      }
-    });
-
-
-  });
-}
-
 //Initialize the server, checking and creating (if needed), our database, collections and users. 
-checkAndCreateDatabase()
+utils.checkAndCreateDatabase(client, databaseUrl)
   .then((db) => {
     dbObj = db;
     console.log(`Completed DB Create`);
-    checkAndCreateCollection('testCollection2', db._self)
+    checkAndCreateCollection(client, 'testCollection2', db._self)
       .then((coll) => {
         //We're all setup so lets start restify
         collectionObj = coll;
 
         //Create readonly users
-        checkAndCreateUser(db._self, 'readonlyUser')
+        utils.checkAndCreateUser(client, db._self, 'readonlyUser')
           .then((user) => {
 
             dbReadonlyUserObj = user;
 
-            checkAndCreateUser(db._self, 'readWriteUser')
+            utils.checkAndCreateUser(client, db._self, 'readWriteUser')
               .then((user) => {
 
                 dbReadWriteUserObj = user;
@@ -177,17 +90,15 @@ server.get('/cosmos/read', function (req, res, next) {
       return next();
     }
     else {
-      var attachments = limitedClient.readAttachments(docLink).toArray((errror, readAttachments) => {
+      limitedClient.readAttachments(docLink).toArray((errror, readAttachments) => {
+        var mediaLinks = readAttachments.map((a) => {
+          return a.media;
+        });
 
-        if (readAttachments && readAttachments.length > 0) {
-          readAttachments.forEach((item) =>{
-            limitedClient.readMedia(item._self).then((media) =>{
-              console.log(media.length);
-            });
-          }); 
-        }
-
-        res.send(readDoc);
+        res.send({
+          document: readDoc,
+          attachementMediaLinks: mediaLinks
+        })
         return next();
       });
     }
@@ -260,7 +171,7 @@ server.get('/cosmos/create', function (req, res, next) {
   });
 });
 
-server.put('/cosmos/attach/', function (req, res, next) {
+server.put('/cosmos/attachment/', function (req, res, next) {
   // Takes in headers of 'resourceId', 'doclink' and 'token'
   // Then creates a limitedClient using the supplied token to read the data
   // from the document. 
@@ -288,6 +199,82 @@ server.put('/cosmos/attach/', function (req, res, next) {
   });
 });
 
+server.get('cosmos/generatepermissions', function (req, res, next) {
+  let resourceLink = req.headers['resourcelink'];
+  let resourceId = req.headers['resourceid'].toLowerCase();
+
+  let readPermissions = {
+    id: uuid.v4(),
+    permissionMode: 'read',
+    resource: resourceLink
+  };
+
+  client.createPermission(dbReadonlyUserObj._self, readPermissions, (error, result) => {
+    if (error) {
+      res.code = 500;
+      res.send(error);
+      return next();
+    }
+    else {
+      res.send({
+        ReadToken: {
+          id: result._self,
+          token: result._token
+        },
+        resourceLink: resourceLink,
+        resourceId: resourceId
+      });
+      return next();
+    }
+  });
+});
+
+server.get('/cosmos/attachment/', function (req, res, next) {
+
+  let resourcelink = req.headers['resourcelink'];
+  let resourceId = req.headers['resourceid'].toLowerCase();
+  let resourceToken = req.headers['token'];
+  let limitedClient = new documentClient(process.env.COSMOS_ENDPOINT, {
+    resourceTokens: { [resourceId]: resourceToken }
+  });
+
+  attachmentClient.readMedia(item._self, (error, resource) => {
+    console.log(media.length);
+
+  });
+
+  limitedClient.readDocument(docLink, (error, readDoc) => {
+    if (error) {
+      res.code = 500;
+      res.send(error);
+      return next();
+    }
+    else {
+      limitedClient.readAttachments(docLink).toArray((errror, readAttachments) => {
+        var tokens = readAttachments.map((a) => {
+          let parts = a._self.split('/');
+          let attachmentResourceId = parts[parts.length - 1].toLocaleLowerCase();
+          return {
+            [attachmentResourceId]: resourceToken
+          }
+        });
+        let attachmentClient = new documentClient(process.env.COSMOS_ENDPOINT, {
+          resourceTokens: tokens
+        });
+
+        if (readAttachments && readAttachments.length > 0) {
+          readAttachments.forEach((item) => {
+
+          });
+        }
+
+        res.send(readDoc);
+        return next();
+
+      });
+    }
+  });
+});
 
 //Oustanding Questions:
 // - How does/can tokens be revoked? Was unable to get this to work. Once issues tokens seem to last for the lifetime of the resource. 
